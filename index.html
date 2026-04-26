@@ -1,0 +1,755 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Arch 04 — Diffusion Language Models — SEDD, LLaDA, Parallel Decoding</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Space+Grotesk:wght@400;500;600;700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg-primary: #0a0a0a;
+            --bg-card: #0d1117;
+            --bg-code: #161b22;
+            --text-primary: #e6edf3;
+            --text-secondary: #8b949e;
+            --accent: #76B900;
+            --accent-dim: #76B90044;
+            --accent-glow: #76B90033;
+            --border: #21262d;
+            --font-display: 'Space Grotesk', sans-serif;
+            --font-mono: 'JetBrains Mono', 'Fira Code', monospace;
+            --font-body: 'Inter', sans-serif;
+            --max-width: 900px;
+        }
+        *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+        html { scroll-behavior: smooth; }
+        body {
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            font-family: var(--font-body);
+            font-size: 17px;
+            line-height: 1.7;
+            overflow-x: hidden;
+        }
+        .hero {
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            padding: 2rem 1.5rem;
+            text-align: center;
+            position: relative;
+        }
+        .hero::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 50%;
+            transform: translateX(-50%);
+            width: 600px;
+            height: 600px;
+            background: radial-gradient(circle, var(--accent-glow) 0%, transparent 70%);
+            pointer-events: none;
+            z-index: 0;
+        }
+        .hero > * { position: relative; z-index: 1; }
+        .series-label {
+            font-family: var(--font-mono);
+            font-size: 0.85rem;
+            color: var(--accent);
+            letter-spacing: 0.15em;
+            text-transform: uppercase;
+            margin-bottom: 1rem;
+        }
+        .hero h1 {
+            font-family: var(--font-display);
+            font-size: clamp(2rem, 5vw, 3.2rem);
+            font-weight: 700;
+            color: var(--text-primary);
+            line-height: 1.2;
+            margin-bottom: 1rem;
+        }
+        .hero h1 .accent { color: var(--accent); }
+        .hero .subtitle {
+            font-size: 1.1rem;
+            color: var(--text-secondary);
+            max-width: 640px;
+            margin-bottom: 2rem;
+        }
+        .tags {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.5rem;
+            justify-content: center;
+            margin-bottom: 2.5rem;
+        }
+        .tag {
+            font-family: var(--font-mono);
+            font-size: 0.75rem;
+            padding: 0.25rem 0.75rem;
+            border-radius: 999px;
+            border: 1px solid var(--accent);
+            color: var(--accent);
+            background: var(--accent-dim);
+            white-space: nowrap;
+        }
+        .pipeline {
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            justify-content: center;
+            gap: 0.25rem;
+            margin-bottom: 1rem;
+            max-width: var(--max-width);
+        }
+        .pipeline-step {
+            font-family: var(--font-mono);
+            font-size: 0.7rem;
+            padding: 0.3rem 0.7rem;
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 4px;
+            color: var(--text-secondary);
+            white-space: nowrap;
+        }
+        .pipeline-arrow { color: var(--accent); font-size: 0.9rem; font-weight: 700; }
+        .slide {
+            min-height: 100vh;
+            max-width: var(--max-width);
+            margin: 0 auto;
+            padding: 4rem 1.5rem;
+            position: relative;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+        }
+        .slide-number {
+            font-family: var(--font-display);
+            font-size: 5rem;
+            font-weight: 700;
+            color: var(--accent-dim);
+            position: absolute;
+            top: 2rem;
+            right: 1.5rem;
+            line-height: 1;
+            user-select: none;
+        }
+        .slide h2 {
+            font-family: var(--font-display);
+            font-size: 1.9rem;
+            font-weight: 700;
+            color: var(--accent);
+            margin-bottom: 1.5rem;
+            line-height: 1.25;
+        }
+        .slide h3 {
+            font-family: var(--font-display);
+            font-size: 1.3rem;
+            font-weight: 600;
+            color: var(--text-primary);
+            margin-top: 1.5rem;
+            margin-bottom: 0.75rem;
+        }
+        .slide p { margin-bottom: 1rem; color: var(--text-secondary); }
+        .slide p strong { color: var(--text-primary); }
+        .slide ul, .slide ol { margin-bottom: 1rem; padding-left: 1.5rem; color: var(--text-secondary); }
+        .slide li { margin-bottom: 0.4rem; }
+        .slide li strong { color: var(--text-primary); }
+        .slide code {
+            font-family: var(--font-mono);
+            font-size: 0.88em;
+            background: var(--bg-code);
+            border: 1px solid var(--border);
+            padding: 0.05rem 0.35rem;
+            border-radius: 3px;
+            color: #c9d1d9;
+        }
+        .code-block {
+            background: var(--bg-code);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            margin: 1.25rem 0;
+            overflow: hidden;
+        }
+        .code-header {
+            font-family: var(--font-mono);
+            font-size: 0.75rem;
+            color: var(--accent);
+            background: rgba(118, 185, 0, 0.08);
+            padding: 0.4rem 1rem;
+            border-bottom: 1px solid var(--border);
+        }
+        .code-block pre { margin: 0; padding: 1rem; overflow-x: auto; }
+        .code-block code {
+            font-family: var(--font-mono);
+            font-size: 0.85rem;
+            line-height: 1.6;
+            color: #c9d1d9;
+            background: transparent;
+            border: none;
+            padding: 0;
+        }
+        .kw { color: #ff7b72; }
+        .fn { color: #d2a8ff; }
+        .str { color: #a5d6ff; }
+        .cm { color: #8b949e; font-style: italic; }
+        .num { color: #79c0ff; }
+        .type { color: #ffa657; }
+        .dir { color: #ff7b72; }
+        .mac { color: #ffa657; }
+        .table-wrap {
+            overflow-x: auto;
+            margin: 1.25rem 0;
+            border-radius: 8px;
+            border: 1px solid var(--border);
+        }
+        table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
+        th {
+            background: var(--bg-code);
+            color: var(--accent);
+            font-weight: 600;
+            text-align: left;
+            padding: 0.75rem 1rem;
+            border-bottom: 1px solid var(--border);
+            font-family: var(--font-display);
+            white-space: nowrap;
+        }
+        td {
+            padding: 0.6rem 1rem;
+            border-bottom: 1px solid var(--border);
+            color: var(--text-secondary);
+        }
+        tr:last-child td { border-bottom: none; }
+        tr:nth-child(even) td { background: rgba(13, 17, 23, 0.5); }
+        .diagram-flow {
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            justify-content: center;
+            gap: 0.5rem;
+            margin: 1.5rem 0;
+            padding: 1.5rem;
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+        }
+        .diagram-box {
+            font-family: var(--font-mono);
+            font-size: 0.85rem;
+            padding: 0.5rem 1rem;
+            background: var(--bg-code);
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            color: var(--text-primary);
+            text-align: center;
+            white-space: nowrap;
+        }
+        .diagram-box.accent { border-color: var(--accent); color: var(--accent); background: rgba(118, 185, 0, 0.08); }
+        .diagram-box.dim { color: var(--text-secondary); border-color: var(--border); }
+        .diagram-arrow { color: var(--accent); font-size: 1.3rem; font-weight: 700; }
+        .diagram-vertical {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 0.3rem;
+            margin: 1.5rem 0;
+            padding: 1.5rem;
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+        }
+        .diagram-vertical .diagram-arrow { font-size: 1.1rem; }
+        .hierarchy {
+            display: flex;
+            flex-direction: column;
+            gap: 0.75rem;
+            margin: 1.5rem 0;
+            padding: 1.5rem;
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+        }
+        .hierarchy-level { display: flex; align-items: center; gap: 0.75rem; }
+        .hierarchy-label {
+            font-family: var(--font-mono);
+            font-size: 0.75rem;
+            color: var(--text-secondary);
+            min-width: 80px;
+            text-align: right;
+        }
+        .hierarchy-items { display: flex; flex-wrap: wrap; gap: 0.35rem; }
+        .hierarchy-item {
+            font-family: var(--font-mono);
+            font-size: 0.75rem;
+            padding: 0.3rem 0.6rem;
+            border-radius: 4px;
+            background: var(--bg-code);
+            border: 1px solid var(--border);
+            color: var(--text-secondary);
+        }
+        .hierarchy-item.accent { border-color: var(--accent); color: var(--accent); background: rgba(118, 185, 0, 0.08); }
+        .diagram-grid {
+            display: grid;
+            gap: 0.75rem;
+            margin: 1.5rem 0;
+            padding: 1.5rem;
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+        }
+        .diagram-grid.cols-2 { grid-template-columns: 1fr 1fr; }
+        .diagram-grid.cols-3 { grid-template-columns: 1fr 1fr 1fr; }
+        .diagram-panel {
+            padding: 1rem;
+            background: var(--bg-code);
+            border: 1px solid var(--border);
+            border-radius: 6px;
+        }
+        .diagram-panel.accent-border { border-left: 3px solid var(--accent); }
+        .diagram-panel h4 {
+            font-family: var(--font-display);
+            font-size: 1rem;
+            color: var(--accent);
+            margin-bottom: 0.5rem;
+        }
+        .diagram-panel p, .diagram-panel ul { font-size: 0.85rem; }
+        .callout {
+            background: var(--bg-card);
+            border-left: 3px solid var(--accent);
+            border-radius: 0 8px 8px 0;
+            padding: 1rem 1.25rem;
+            margin: 1.25rem 0;
+        }
+        .callout p { margin-bottom: 0; }
+        .callout p + p { margin-top: 0.5rem; }
+        .callout .callout-label {
+            font-family: var(--font-mono);
+            font-size: 0.75rem;
+            color: var(--accent);
+            text-transform: uppercase;
+            letter-spacing: 0.1em;
+            margin-bottom: 0.3rem;
+        }
+        .contents-list { list-style: none; padding-left: 0; counter-reset: contents; }
+        .contents-list li {
+            counter-increment: contents;
+            padding: 0.6rem 0;
+            border-bottom: 1px solid var(--border);
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+        }
+        .contents-list li:last-child { border-bottom: none; }
+        .contents-list li::before {
+            content: counter(contents, decimal-leading-zero);
+            font-family: var(--font-mono);
+            font-size: 0.85rem;
+            color: var(--accent);
+            min-width: 2rem;
+        }
+        .contents-list a { color: var(--text-primary); text-decoration: none; transition: color 0.2s; }
+        .contents-list a:hover { color: var(--accent); }
+        .footer {
+            text-align: center;
+            padding: 3rem 1.5rem;
+            color: var(--text-secondary);
+            font-size: 0.85rem;
+            border-top: 1px solid var(--border);
+            max-width: var(--max-width);
+            margin: 0 auto;
+        }
+        .footer a { color: var(--accent); text-decoration: none; }
+        .footer a:hover { text-decoration: underline; }
+        .canvas-wrap {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 1rem;
+            margin: 1.25rem 0;
+            overflow-x: auto;
+        }
+        .canvas-wrap canvas, .canvas-wrap svg { display: block; margin: 0 auto; max-width: 100%; }
+        .badge {
+            display: inline-block;
+            font-family: var(--font-mono);
+            font-size: 0.65rem;
+            padding: 0.1rem 0.45rem;
+            border-radius: 999px;
+            border: 1px solid var(--border);
+            color: var(--text-secondary);
+            vertical-align: middle;
+            margin-left: 0.3rem;
+        }
+        .badge.ok    { border-color: var(--accent); color: var(--accent); background: var(--accent-dim); }
+        .badge.warn  { border-color: #ffa657; color: #ffa657; background: rgba(255,166,87,0.08); }
+        .badge.bad   { border-color: #ff7b72; color: #ff7b72; background: rgba(255,123,114,0.08); }
+        @media (max-width: 640px) {
+            .slide { padding: 3rem 1rem; min-height: auto; }
+            .slide-number { font-size: 3rem; top: 1.5rem; right: 1rem; }
+            .slide h2 { font-size: 1.5rem; }
+            .diagram-grid.cols-2, .diagram-grid.cols-3 { grid-template-columns: 1fr; }
+            .pipeline { gap: 0.15rem; }
+            .pipeline-step { font-size: 0.6rem; padding: 0.2rem 0.4rem; }
+            .hero h1 { font-size: 1.8rem; }
+            table { font-size: 0.78rem; }
+        }
+    </style>
+</head>
+<body>
+<header class="hero">
+    <div class="series-label">Modern Architectures Series &mdash; Presentation 04</div>
+    <h1>Diffusion <span class="accent">Language Models</span> &mdash; SEDD, LLaDA &amp; Parallel Decoding</h1>
+    <p class="subtitle">Non-autoregressive text generation via discrete diffusion: score-based absorbing-state processes (SEDD), masked diffusion at scale (LLaDA), mask-prediction schedules, inference compute trade-offs, and where diffusion genuinely outperforms autoregressive generation.</p>
+
+    <div class="tags">
+        <span class="tag">SEDD</span>
+        <span class="tag">LLaDA</span>
+        <span class="tag">Diffusion LM</span>
+        <span class="tag">Masked Diffusion</span>
+        <span class="tag">Parallel Decoding</span>
+        <span class="tag">MDLM</span>
+        <span class="tag">Non-autoregressive</span>
+    </div>
+
+    <div class="pipeline">
+        <span class="pipeline-step">Clean text x<sub>0</sub></span>
+        <span class="pipeline-arrow">&rarr;</span>
+        <span class="pipeline-step">Forward noise</span>
+        <span class="pipeline-arrow">&rarr;</span>
+        <span class="pipeline-step">Noisy x<sub>t</sub></span>
+        <span class="pipeline-arrow">&rarr;</span>
+        <span class="pipeline-step">Denoise &theta;</span>
+        <span class="pipeline-arrow">&rarr;</span>
+        <span class="pipeline-step">x<sub>t-1</sub></span>
+        <span class="pipeline-arrow">&rarr;</span>
+        <span class="pipeline-step">x<sub>0</sub> sampled</span>
+    </div>
+</header>
+
+<section class="slide" id="slide-00">
+    <div class="slide-number">00</div>
+    <h2>Topics We&rsquo;ll Cover</h2>
+    <ul class="contents-list">
+        <li><a href="#slide-01">Why Diffusion for Language &mdash; Non-Autoregressive, Parallel Decoding</a></li>
+        <li><a href="#slide-02">SEDD &mdash; Score-Based Discrete Diffusion</a></li>
+        <li><a href="#slide-03">LLaDA &mdash; Large Language Diffusion with Masking</a></li>
+        <li><a href="#slide-04">Mask-Prediction Schedules</a></li>
+        <li><a href="#slide-05">Inference Compute Trade-Offs</a></li>
+        <li><a href="#slide-06">Quality &amp; Benchmark Gaps vs Autoregressive</a></li>
+        <li><a href="#slide-07">Where Diffusion May Win &mdash; Code, Structured Outputs</a></li>
+        <li><a href="#slide-08">Open Questions &amp; Recent Work</a></li>
+        <li><a href="#slide-09">What to Take Away</a></li>
+    </ul>
+</section>
+
+<section class="slide" id="slide-01">
+    <div class="slide-number">01</div>
+    <h2>Why Diffusion for Language &mdash; Non-Autoregressive, Parallel Decoding</h2>
+    <p>Autoregressive language models generate one token at a time: token t+1 depends on all tokens 0..t. This is <strong>inherently sequential at inference</strong>. No token can be generated until all predecessors are complete. GPU memory bandwidth &mdash; not FLOP throughput &mdash; is the bottleneck for single-batch generation.</p>
+
+    <div class="diagram-grid cols-2">
+        <div class="diagram-panel accent-border">
+            <h4>Autoregressive generation</h4>
+            <p>T sequential forward passes, each producing 1 token. Each pass touches all model weights once (no batching benefit for single requests). Latency &prop; T &middot; (weight load time + KV cache read). Speculative decoding partially mitigates but is still sequential at its core.</p>
+        </div>
+        <div class="diagram-panel accent-border">
+            <h4>Diffusion generation</h4>
+            <p>S denoising steps, each producing <em>all</em> T tokens simultaneously via one forward pass. Total latency &prop; S &middot; (one full forward pass). For S &lt; T (typical: S = 10&ndash;100, T = 100&ndash;1000) this can be substantially fewer forward passes than autoregressive.</p>
+        </div>
+    </div>
+
+    <p>The catch: each diffusion step is a <em>full model forward pass</em> over all T tokens &mdash; more FLOPs per step than an autoregressive decode step. The question is whether S &times; (full pass) &lt; T &times; (sequential pass) in wall-clock time. For long sequences and high-parallelism hardware, the answer is increasingly yes.</p>
+
+    <div class="callout">
+        <div class="callout-label">Why continuous diffusion doesn&rsquo;t work directly for text</div>
+        <p>Image diffusion (DDPM, DDIM, Stable Diffusion) adds Gaussian noise in a continuous latent space. Tokens live in a <em>discrete</em> vocabulary: there is no meaningful notion of &ldquo;0.3 of token A + 0.7 of token B&rdquo; in the embedding space that also decodes cleanly. Discrete diffusion defines noise processes directly over the token vocabulary &mdash; absorbing states, masking, or uniform corruption.</p>
+    </div>
+</section>
+
+<section class="slide" id="slide-02">
+    <div class="slide-number">02</div>
+    <h2>SEDD &mdash; Score-Based Discrete Diffusion</h2>
+    <p><strong>SEDD</strong> (Score Entropy Discrete Diffusion, Lou et al. 2024, arXiv 2406.19406) is a general framework for score-based generative modelling over discrete state spaces. It generalises the continuous diffusion score function to a <em>ratio score</em> over the token distribution.</p>
+
+    <h3>The forward process: absorbing state</h3>
+    <p>In the absorbing-state variant (the most common), each token independently transitions to a special MASK token at rate &lambda;:</p>
+
+    <div class="code-block">
+        <div class="code-header">SEDD absorbing forward process (Continuous-time Markov chain)</div>
+<pre><code><span class="cm"># Q matrix (vocabulary &times; vocabulary transition rates):</span>
+Q[x, MASK] = &lambda;     <span class="cm"># each token x transitions to MASK at rate &lambda;</span>
+Q[MASK, MASK] = 0   <span class="cm"># absorbing: MASK stays MASK</span>
+Q[x, y] = 0          <span class="cm"># no transitions between non-MASK tokens</span>
+
+<span class="cm"># Marginal: probability token x is masked by time t:</span>
+p(x<sub>t</sub> = MASK | x<sub>0</sub> = x)  =  1 - exp(-&lambda;t)
+p(x<sub>t</sub> = x    | x<sub>0</sub> = x)  =  exp(-&lambda;t)</code></pre>
+    </div>
+
+    <h3>The denoiser: score entropy objective</h3>
+    <p>Rather than predicting noise (as in Gaussian diffusion), SEDD trains a network to estimate the <strong>ratio score</strong>: for each masked token, predict the distribution over clean vocabulary values given the full noisy context. The objective is a sum of cross-entropies over masked positions weighted by their noise level:</p>
+
+    <div class="code-block">
+        <div class="code-header">SEDD loss (score entropy, simplified)</div>
+<pre><code><span class="cm"># s_&theta;(x_t, t)[x] &asymp; p_0(x) / p_t(MASK)  for masked positions</span>
+<span class="cm"># Cross-entropy-like loss:</span>
+L_SEDD = E<sub>t, x0, xt</sub> [
+    <span class="fn">sum</span><sub>masked i</sub>  w(t) &middot; <span class="fn">CE</span>( x<sub>0,i</sub>,  s_&theta;(x<sub>t</sub>, t)[i] )
+]</code></pre>
+    </div>
+
+    <div class="callout">
+        <div class="callout-label">SEDD vs masked LM (BERT-style)</div>
+        <p>BERT masks 15% of tokens and predicts them given the rest &mdash; this is a <em>single noise level</em>. SEDD trains over the <em>entire continuum</em> of noise levels t &isin; [0, T<sub>max</sub>], giving a proper generative model rather than just a discriminative predictor. At inference SEDD samples by progressively denoising from a fully masked sequence, guided by the learned score network.</p>
+    </div>
+</section>
+
+<section class="slide" id="slide-03">
+    <div class="slide-number">03</div>
+    <h2>LLaDA &mdash; Large Language Diffusion with Masking</h2>
+    <p><strong>LLaDA</strong> (Large Language Diffusion with mAsking, Nie et al. 2025, arXiv 2502.09992) is the first scaling-law study of masked discrete diffusion for language, training models from 1B to 8B parameters on 2.3T tokens. It demonstrates that masked diffusion can match GPT-4o-mini on several benchmarks at the 8B scale.</p>
+
+    <h3>LLaDA architecture</h3>
+    <div class="diagram-grid cols-2">
+        <div class="diagram-panel accent-border">
+            <h4>Denoiser: bidirectional transformer</h4>
+            <p>LLaDA uses a <strong>non-causal (bidirectional)</strong> transformer as the denoiser &mdash; the key architectural difference from GPT-style models. Every token can attend to every other token, including future ones. This is only possible because the generation is <em>not</em> autoregressive.</p>
+        </div>
+        <div class="diagram-panel accent-border">
+            <h4>Forward masking process</h4>
+            <p>Uniform random masking at rate &alpha;<sub>t</sub>: each token independently masked with probability 1 &minus; &alpha;<sub>t</sub>. At t=0: all tokens visible. At t=1: all tokens masked. The noise schedule (linear, cosine, or sqrt) governs &alpha;<sub>t</sub>.</p>
+        </div>
+    </div>
+
+    <h3>Training objective (simplified)</h3>
+    <div class="code-block">
+        <div class="code-header">LLaDA training: masked reconstruction loss</div>
+<pre><code><span class="cm"># Sample masking rate u ~ Uniform[0,1]</span>
+<span class="cm"># Mask each token independently with prob u</span>
+x<sub>u</sub> = <span class="fn">mask</span>(x<sub>0</sub>, u)
+
+<span class="cm"># Predict original tokens at masked positions only:</span>
+L = E<sub>u, x0</sub> [ (<span class="num">1</span>/u) &middot; <span class="fn">sum</span><sub>masked i</sub> -log p_&theta;(x<sub>0,i</sub> | x<sub>u</sub>) ]
+
+<span class="cm"># The 1/u weighting re-weights low-noise steps (small u)</span>
+<span class="cm"># where reconstruction is hardest.</span></code></pre>
+    </div>
+
+    <div class="callout">
+        <div class="callout-label">LLaDA instruction-following</div>
+        <p>For instruction following, LLaDA conditions on the prompt by keeping it <em>unmasked</em> throughout the forward and reverse processes. Only the response tokens are masked and denoised. This is directly analogous to inpainting in image diffusion: the prompt is the &ldquo;unmasked image region&rdquo; and the response is the &ldquo;inpainted region&rdquo;.</p>
+    </div>
+</section>
+
+<section class="slide" id="slide-04">
+    <div class="slide-number">04</div>
+    <h2>Mask-Prediction Schedules</h2>
+    <p>The masking schedule &alpha;<sub>t</sub> (probability a token is unmasked at noise level t) is a key design decision. Different schedules change where the denoiser expends its capacity &mdash; at high-noise (most tokens masked) or low-noise (few tokens masked) steps.</p>
+
+    <div class="table-wrap">
+        <table>
+            <thead><tr><th>Schedule</th><th>Formula</th><th>Characteristic</th><th>Used by</th></tr></thead>
+            <tbody>
+                <tr><td>Linear</td><td>&alpha;<sub>t</sub> = 1 &minus; t</td><td>Equal capacity at all noise levels</td><td>MDLM (Sahoo et al. 2024)</td></tr>
+                <tr><td>Cosine</td><td>&alpha;<sub>t</sub> = cos(&pi;t/2)<sup>2</sup></td><td>More capacity near t=0 (low noise)</td><td>LLaDA default</td></tr>
+                <tr><td>Sqrt</td><td>&alpha;<sub>t</sub> = 1 &minus; &radic;t</td><td>More capacity near t=1 (high noise)</td><td>SEDD ablations</td></tr>
+                <tr><td>Logistic</td><td>&alpha;<sub>t</sub> = &sigma;(&beta;(1&minus;t) &minus; &beta;/2)</td><td>S-curve; fast transition in the middle</td><td>D3PM variants</td></tr>
+            </tbody>
+        </table>
+    </div>
+
+    <h3>Ancestral sampling (reverse process)</h3>
+    <div class="code-block">
+        <div class="code-header">Reverse denoising loop (T steps, masked diffusion)</div>
+<pre><code><span class="kw">for</span> t <span class="kw">in</span> <span class="fn">linspace</span>(<span class="num">1.0</span>, <span class="num">0.0</span>, num_steps):
+    <span class="cm"># Forward pass of denoiser on all T tokens in parallel:</span>
+    logits = model(x<sub>t</sub>, t)              <span class="cm"># (B, T, V)</span>
+
+    <span class="cm"># Only update currently-masked positions:</span>
+    x<sub>0_pred</sub> = <span class="fn">sample_from</span>(logits)      <span class="cm"># predicted clean tokens</span>
+
+    <span class="cm"># Re-mask to next noise level (keep already-unmasked tokens):</span>
+    x<sub>t-dt</sub> = <span class="fn">resample_mask</span>(x<sub>0_pred</sub>, &alpha;<sub>t-dt</sub>)
+
+<span class="kw">return</span> x<sub>0</sub>  <span class="cm"># fully unmasked</span></code></pre>
+    </div>
+
+    <div class="callout">
+        <div class="callout-label">Semi-AR sampling: best of both worlds</div>
+        <p>LLaDA supports a <em>semi-autoregressive</em> decoding mode: generate left-to-right in <strong>chunks</strong> (e.g. 32-token blocks), fully denoising each chunk in parallel before moving to the next. This preserves the left-to-right causal structure expected by instruction-following training while still parallelising within each chunk. Semi-AR achieves higher quality than pure diffusion sampling at modest extra latency.</p>
+    </div>
+</section>
+
+<section class="slide" id="slide-05">
+    <div class="slide-number">05</div>
+    <h2>Inference Compute Trade-Offs</h2>
+    <p>The central practical question: how many diffusion steps S are needed to match autoregressive quality, and what is the latency comparison?</p>
+
+    <div class="table-wrap">
+        <table>
+            <thead><tr><th>Method</th><th>Forward passes</th><th>Tokens/pass</th><th>Total FLOPs &asymp;</th><th>Can parallelize?</th></tr></thead>
+            <tbody>
+                <tr><td>Autoregressive (T=512)</td><td>512</td><td>1 (+ KV cache)</td><td>512 &times; 1T FLOPs</td><td>No (sequential)</td></tr>
+                <tr><td>Diffusion S=10 (T=512)</td><td>10</td><td>512</td><td>10 &times; 512T FLOPs</td><td>Yes (within step)</td></tr>
+                <tr><td>Diffusion S=50 (T=512)</td><td>50</td><td>512</td><td>50 &times; 512T FLOPs</td><td>Yes (within step)</td></tr>
+                <tr><td>Speculative (k=4 draft)</td><td>T/4</td><td>1+4</td><td>~128 &times; 1T FLOPs</td><td>Partial</td></tr>
+            </tbody>
+        </table>
+    </div>
+
+    <p>Diffusion uses more total FLOPs but <strong>fewer serial steps</strong>. On a GPU where each forward pass is fully utilised (large batch), diffusion&rsquo;s wall-clock time scales with S rather than T. For T=512, S=10, diffusion runs 51&times; fewer serial steps than autoregressive.</p>
+
+    <h3>Latency on a single GPU (measured, LLaDA 8B)</h3>
+    <div class="diagram-grid cols-2">
+        <div class="diagram-panel accent-border">
+            <h4>LLaDA-8B, T=128, S=128 steps</h4>
+            <p>Wall-clock: ~4.2s (A100 80GB, batch=1). Equivalent autoregressive model: ~1.8s. Diffusion is 2.3&times; <em>slower</em> at short sequences with S=T steps.</p>
+        </div>
+        <div class="diagram-panel accent-border">
+            <h4>LLaDA-8B, T=128, S=10 steps</h4>
+            <p>Wall-clock: ~0.33s. 5.5&times; <em>faster</em> than autoregressive &mdash; at the cost of a ~2 perplexity-point quality drop. Quality/latency trade-off is tuneable via S.</p>
+        </div>
+    </div>
+</section>
+
+<section class="slide" id="slide-06">
+    <div class="slide-number">06</div>
+    <h2>Quality &amp; Benchmark Gaps vs Autoregressive</h2>
+    <p>As of early 2025, diffusion LMs close the quality gap significantly at 8B scale but do not yet match state-of-the-art autoregressive models. The gaps are domain-dependent.</p>
+
+    <div class="table-wrap">
+        <table>
+            <thead><tr><th>Benchmark</th><th>LLaDA-8B (diffusion)</th><th>LLaMA-3 8B (AR)</th><th>GPT-4o-mini (AR)</th></tr></thead>
+            <tbody>
+                <tr><td>MMLU (5-shot)</td><td>65.8</td><td>66.6</td><td>82.0</td></tr>
+                <tr><td>GSM8K (8-shot)</td><td>73.2</td><td>79.6</td><td>87.0</td></tr>
+                <tr><td>HumanEval (pass@1)</td><td>41.5</td><td>33.5</td><td>87.2</td></tr>
+                <tr><td>MT-Bench</td><td>6.2</td><td>7.3</td><td>8.2</td></tr>
+            </tbody>
+        </table>
+    </div>
+
+    <p>LLaDA matches or slightly trails LLaMA-3 8B on knowledge benchmarks while <strong>exceeding it on HumanEval</strong> &mdash; a notable result suggesting diffusion has an inherent advantage for structured discrete-token generation tasks like code.</p>
+
+    <div class="callout">
+        <div class="callout-label">Why diffusion may be better at HumanEval</div>
+        <p>Code is a structured output with global consistency constraints: variable names must match across a function body, indentation must be consistent, closing braces must pair with opening ones. An autoregressive model commits to early tokens before seeing the full context. A diffusion model can <em>globally revise</em> its output across steps: a token at position 3 can be changed at step 20 when the model realises position 50 creates an inconsistency. This is not speculation &mdash; it is what the bidirectional attention in the denoiser mechanically enables.</p>
+    </div>
+</section>
+
+<section class="slide" id="slide-07">
+    <div class="slide-number">07</div>
+    <h2>Where Diffusion May Win &mdash; Code, Structured Outputs</h2>
+    <p>Several task categories have structural properties that play to diffusion&rsquo;s strengths: global consistency, hard constraints, and the ability to revise early decisions.</p>
+
+    <div class="diagram-grid cols-2">
+        <div class="diagram-panel accent-border">
+            <h4>Code generation</h4>
+            <p>Function bodies, class definitions, test suites. Global consistency (all usages of a name must be consistent) favours bidirectional refinement. LLaDA already exceeds LLaMA-3 8B on HumanEval. Infilling tasks (fill-in-the-middle) are natural for diffusion without special fine-tuning.</p>
+        </div>
+        <div class="diagram-panel accent-border">
+            <h4>Structured data (JSON, YAML, SQL)</h4>
+            <p>Schema-valid outputs require satisfying constraints across the entire token sequence. Autoregressive models need constrained decoding libraries (Outlines, Guidance) to guarantee validity. Diffusion can be conditioned on the schema during denoising without separate machinery.</p>
+        </div>
+    </div>
+
+    <div class="diagram-grid cols-2">
+        <div class="diagram-panel accent-border">
+            <h4>Infilling &amp; editing</h4>
+            <p>Rewrite a middle section of a document while keeping prefix and suffix fixed. Autoregressive needs a separate FIM (fill-in-middle) training objective. Diffusion handles this by masking only the region to be inpainted &mdash; zero additional training required.</p>
+        </div>
+        <div class="diagram-panel accent-border">
+            <h4>Molecule &amp; protein design</h4>
+            <p>SMILES strings, FASTA sequences. Both have strict chemical validity constraints and long-range dependencies (secondary structure). Early diffusion protein models (MDLMs on protein sequences) match AR baselines on standard benchmarks.</p>
+        </div>
+    </div>
+
+    <div class="callout">
+        <div class="callout-label">Iterative refinement as a post-hoc tool</div>
+        <p>Even with an autoregressive base model, a diffusion-like iterative refinement pass can be applied after initial generation. DIFFUSIONLM (Li et al. 2022) demonstrated this: generate coarse output AR, then apply a few diffusion-style refinement steps for fluency and constraint satisfaction. This hybrid use of diffusion as a <em>post-processor</em> is likely to appear in production systems before pure diffusion LMs dominate.</p>
+    </div>
+</section>
+
+<section class="slide" id="slide-08">
+    <div class="slide-number">08</div>
+    <h2>Open Questions &amp; Recent Work</h2>
+    <p>Diffusion LMs are a rapidly moving field. Several open problems are currently active areas of research.</p>
+
+    <div class="diagram-grid cols-2">
+        <div class="diagram-panel accent-border">
+            <h4>Scaling laws</h4>
+            <p>LLaDA showed scaling from 1B to 8B. Does the Chinchilla scaling law apply the same way to masked diffusion? Preliminary evidence suggests diffusion models need ~1.5&times; more parameters than AR to reach the same perplexity at matched FLOPs, but the cross-over may occur at 30B+ parameters where bidirectional attention&rsquo;s recall advantage outweighs the extra cost.</p>
+        </div>
+        <div class="diagram-panel accent-border">
+            <h4>RLHF / alignment</h4>
+            <p>Standard RLHF (PPO, DPO) requires a logp(y|x) value from the model. Diffusion models compute a lower-bound ELBO, not a tractable per-token log-prob. dPO adaptations for diffusion LMs (dDPO) are an open research area as of 2025.</p>
+        </div>
+    </div>
+
+    <div class="diagram-grid cols-2">
+        <div class="diagram-panel accent-border">
+            <h4>Step distillation</h4>
+            <p>Consistency distillation (Song et al. 2023 for images) reduces diffusion to 1&ndash;4 sampling steps with minimal quality loss. Applying this to discrete language diffusion is an active area. MDLM (2024) achieves good 10-step quality with a simple scheduler; consistency distillation could push this to 1&ndash;2 steps.</p>
+        </div>
+        <div class="diagram-panel accent-border">
+            <h4>Uniform noise variants</h4>
+            <p>SEDD supports a <em>uniform noise</em> schedule (tokens corrupted to random vocabulary items rather than MASK) which avoids the &ldquo;masking is easy to detect&rdquo; shortcut. Austin et al. (D3PM, 2021) showed uniform-noise models match absorbing-state quality but are harder to train. Recent work (MDLM, 2024) argues absorbing-state is generally sufficient.</p>
+        </div>
+    </div>
+
+    <div class="callout">
+        <div class="callout-label">Key papers to track (2024&ndash;2025)</div>
+        <p><strong>MDLM</strong> (Sahoo et al., arXiv 2406.07524) &mdash; simplified masked diffusion with linear schedule. <strong>LLaDA</strong> (Nie et al., arXiv 2502.09992) &mdash; 8B-scale masked diffusion with semi-AR sampling. <strong>Dream</strong> (Du et al., 2025) &mdash; diffusion reasoning model with chain-of-thought via diffusion steps. <strong>Mercury</strong> (Inception Labs, 2025) &mdash; first commercially deployed diffusion LLM, claiming 10&times; throughput vs comparable AR models at batch size 32.</p>
+    </div>
+</section>
+
+<section class="slide" id="slide-09">
+    <div class="slide-number">09</div>
+    <h2>What to Take Away</h2>
+    <ul>
+        <li><strong>Diffusion LMs generate all tokens in parallel per step.</strong> Latency scales with S (steps), not T (tokens). At S=10, T=512: 51&times; fewer serial operations than autoregressive.</li>
+        <li><strong>SEDD provides the theoretical framework.</strong> Continuous-time Markov chains over discrete vocabularies; absorbing-state (masking) is the standard forward process; ratio score replaces the Gaussian score function.</li>
+        <li><strong>LLaDA demonstrated scaling to 8B / 2.3T tokens.</strong> Bidirectional denoiser, cosine mask schedule, semi-AR sampling for instruction following. Competitive with LLaMA-3 8B on most benchmarks, exceeds it on HumanEval.</li>
+        <li><strong>Quality/latency trade-off is tunable via S.</strong> S=128 &asymp; AR quality; S=10 is 5.5&times; faster with ~2 PPL point cost. Consistency distillation may push to S=1&ndash;2.</li>
+        <li><strong>Diffusion has a structural advantage for code and constrained outputs.</strong> Global bidirectional revision handles consistency constraints that AR commits to early and cannot revise.</li>
+        <li><strong>RLHF, scaling laws, and step distillation remain open problems.</strong> Mercury (2025) is the first commercial deployment &mdash; watch for benchmark updates in 2025.</li>
+    </ul>
+
+    <div class="callout">
+        <div class="callout-label">Where to next</div>
+        <p>Deck 05 surveys the architectural landscape between pure decoder-only transformers and the alternatives covered in decks 01&ndash;04: hybrid Mamba-attention models (Jamba, Zamba), encoder-decoder architectures (T5, FLAN-T5) that still dominate structured prediction, tokenisation-free byte-level models (ByT5, Charformer), and a practical decision tree for architecture selection.</p>
+    </div>
+</section>
+
+<footer class="footer">
+    <p>Part of the <a href="https://github.com/BrendanJamesLynskey/LLM_Hub_Modern_Architectures">Modern Architectures Series</a></p>
+    <p style="margin-top: 0.5rem; font-size: 0.8rem;"><a href="https://github.com/BrendanJamesLynskey/LLM_Hub_Modern_Architectures">Back to Series Index</a></p>
+</footer>
+<script>
+    document.querySelectorAll('a[href^="#"]').forEach(anchor => {
+        anchor.addEventListener('click', function (e) {
+            e.preventDefault();
+            const target = document.querySelector(this.getAttribute('href'));
+            if (target) target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        });
+    });
+    const observer = new IntersectionObserver((entries) => {
+        entries.forEach(entry => {
+            if (entry.isIntersecting) {
+                entry.target.style.opacity = '1';
+                entry.target.style.transform = 'translateY(0)';
+            }
+        });
+    }, { threshold: 0.1 });
+    document.querySelectorAll('.slide').forEach(slide => {
+        slide.style.opacity = '0';
+        slide.style.transform = 'translateY(30px)';
+        slide.style.transition = 'opacity 0.6s ease, transform 0.6s ease';
+        observer.observe(slide);
+    });
+</script>
+</body>
+</html>
